@@ -112,8 +112,28 @@ filter([Char | String], Head, Trie, Success, Filter) ->
             filter(String, Head ++ [Char], Trie, Head, Filter)
     end.
 
-replace([], _, _, _, Replaced) ->
-    lists:reverse(Replaced);
+replace([], Head, Trie, _, Replaced) ->
+    case status(Head, Trie) of
+        0 ->
+            Head1 = get_fail(Head),
+            {_, Replaced1} = lists:foldl(
+                fun(H, {S, Acc}) ->
+                    case S of
+                        0 -> {S, Acc};
+                        _ -> {S - 1, [H | Acc]}
+                    end
+                end,
+                {length(Head) - length(Head1), Replaced},
+                Head
+            ),
+            replace([], Head1, Trie, [], Replaced1);
+        1 ->
+            Replaced1 = lists:foldl(fun(H, Acc) -> [H | Acc] end, Replaced, Head),
+            lists:reverse(Replaced1);
+        2 ->
+            Replaced1 = lists:foldl(fun(_, Acc) -> [42 | Acc] end, Replaced, Head),
+            lists:reverse(Replaced1)
+    end;
 replace([Char | String], Head, Trie, [], Replaced) ->
     case status(Head, Trie) of
         0 ->
