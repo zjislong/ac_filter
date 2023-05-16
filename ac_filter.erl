@@ -7,126 +7,207 @@
 %%% Created : 11. 四月 2018 04:54
 %%%-------------------------------------------------------------------
 -module(ac_filter).
+
 -author("zhengjia").
 
 %% API
--export([build_ac/2, build_ac_file/2, data_ac/1, filter/2, check/2, replace/2, try_goto/3]).
+-export([
+    build/1,
+    filter/1,
+    check/1,
+    replace/1,
+    insert/2,
+    get_childs/2
+]).
 
-build_ac(Name, Keys) ->
-    spawn(?MODULE, build_ac_file, [Name, Keys]).
-
-build_ac_file(Name, Keys) ->
-    build_ac_goto_output(Keys),
-    data_ac(Name).
+build(Keys) ->
+    Trie = build_trie(Keys, #{}),
+    build_fail(Trie).
 
 %%检查字符串是否包含指定字符：返回包含的指定字符数组
-filter(Mod, String) ->
-    filter(Mod, String, []).
+filter(String) ->
+    Trie = get(trie),
+    filter(String, [], Trie, [], []).
 
-%%检查字符串是否包含非法字符：返回ok表示通过，返回error表示没通过
-check(_, []) ->
-    ok;
-check(Mod, [Char | String]) ->
-    case try_goto(Mod, [Char | String], "") of
-        fail ->
-            check(Mod, String);
-        {ok, _, _} ->
-            error
-    end.
+%%检查字符串是否包含非法字符：返回true表示通过，返回false表示没通过
+check([]) ->
+    true;
+check([Char | String]) ->
+    Trie = get(trie),
+    check(String, [Char], Trie, []).
 
-replace(Mod, String) ->
-    replace(Mod, String, "").
+replace(String) ->
+    Trie = get(trie),
+    replace(String, [], Trie, [], []).
 
 %% ====================================================================
 %% Internal functions
 %% ====================================================================
-data_ac(Name0) ->
-    Name = atom_to_list(Name0),
-    FileName = "./src/filter/" ++ Name ++ ".erl",
-    file:delete(FileName),
-    io:format("start write file:~p~n", [Name]),
-    write_file(FileName, "-module("++Name++").\n-export([goto/2,output/2]).\n"),
-    Goto = [{Head, Char, Key} || {{goto, {Head, Char}}, Key} <- get()],
-    Output = [{Head, Char, Key} || {{output, {Head, Char}}, Key} <- get()],
-    Total = length(Goto) + length(Output),
-    GotoC = lists:foldl(fun({Head, Char, Key}, C) ->
-                                write_file(FileName, "\ngoto(\""++Head++"\","++integer_to_list(Char)++")-> \""++Key++"\";"),
-                                erase({goto, {Head, Char}}),
-                                io:format("write progress:~p/~p~n", [C, Total]),
-                                C + 1
-                        end, 1, Goto),
-    write_file(FileName, "\ngoto(_,_)-> fail."),
-    lists:foldl(fun({Head, Char, Key}, C) ->
-                        write_file(FileName, "\noutput(\""++Head++"\", "++integer_to_list(Char)++")-> \""++Key++"\";"),
-                        erase({output, {Head, Char}}),
-                        io:format("write progress:~p/~p~n", [C, Total]),
-                        C + 1
-                end, GotoC, Output),
-    write_file(FileName, "\noutput(_,_)-> fail."),
-    io:format("write file:~p finished!~n", [Name]).
+build_trie([], Trie) ->
+    put(trie, Trie),
+    Trie;
+build_trie([Key | Keys], Trie) ->
+    Trie1 = insert(Key, Trie),
+    build_trie(Keys, Trie1).
 
-build_ac_goto_output([]) ->
+build_fail(Trie) ->
+    Keys0 = maps:keys(Trie),
+    Keys = [[Key] || Key <- Keys0],
+    build_fail(Keys, Trie).
+
+build_fail([], _) ->
     ok;
-build_ac_goto_output([Key | Keys]) ->
-    build_ac_goto_output1(Key, ""),
-    build_ac_goto_output(Keys).
-
-build_ac_goto_output1([], _) ->
-    ok;
-build_ac_goto_output1([Char], Head) ->
-    Key = Head ++ [Char],
-    put({goto, {Head, Char}}, Key),
-    put({output, {Head, Char}}, Key),
-    ok;
-build_ac_goto_output1([Char|RChar], Head) ->
-    Key = Head ++ [Char],
-    put({goto, {Head, Char}}, Key),
-    build_ac_goto_output1(RChar, Key).
-
-filter(_, [], Acc) ->
-    Acc;
-filter(Mod, [Char | String], Acc) ->
-    case try_goto(Mod, [Char | String], "") of
-        fail ->
-            filter(Mod, String, Acc);
-        {ok, Output, NewString} ->
-            filter(Mod, NewString, [Output | Acc])
-    end.
-
-replace(_, [], Acc) ->
-    Acc;
-replace(Mod, [Char | String], Acc) ->
-    case try_goto(Mod, [Char | String], "") of
-        fail ->
-            replace(Mod, String, Acc ++ [Char]);
-        {ok, Output, NewString} ->
-            replace(Mod, NewString, Acc ++ [$* || _ <- Output])
-    end.
-
-try_goto(_, [], _) ->
-    fail;
-try_goto(Mod, [Char | String], Head) ->
-    case Mod:goto(Head, Char) of
-        fail ->
-            case Mod:output(Head, Char) of
-                fail ->
-                    fail;
-                NewHead ->
-                    {ok, NewHead, String}
-            end;
-        NewHead ->
-            case try_goto(Mod, String, NewHead) of
-                fail ->
-                    case Mod:output(Head, Char) of
-                        fail ->
-                            fail;
-                        NewHead ->
-                            {ok, NewHead, String}
-                    end;
-                Res ->
-                    Res
+build_fail([Key | Keys], Trie) ->
+    FailKey = get_fail(Key),
+    {ok, Childs} = get_childs(Key, Trie),
+    F = fun
+        (-1) ->
+            ok;
+        (Child) ->
+            case build_fail(Child, FailKey, Trie) of
+                [] -> ok;
+                ChildFailKey -> put({fail, Key ++ [Child]}, ChildFailKey)
             end
+    end,
+    lists:foreach(F, Childs),
+    build_fail(Keys ++ [Key ++ [Char] || Char <- Childs, Char =/= -1], Trie).
+
+build_fail(Child, [], Trie) ->
+    TempKey = [Child],
+    case get_childs(TempKey, Trie) of
+        {ok, _} ->
+            TempKey;
+        false ->
+            []
+    end;
+build_fail(Child, FailKey, Trie) ->
+    TempKey = FailKey ++ [Child],
+    case get_childs(TempKey, Trie) of
+        {ok, _} ->
+            TempKey;
+        false ->
+            FailKey1 = get_fail(FailKey),
+            build_fail(Child, FailKey1, Trie)
     end.
 
-write_file(FileName, Data) ->
-    file:write_file(FileName, unicode:characters_to_binary(Data), [append]).
+filter([], _, _, _, Filter) ->
+    Filter;
+filter([Char | String], Head, Trie, [], Filter) ->
+    case status(Head, Trie) of
+        0 ->
+            Head1 = get_fail(Head),
+            filter([Char | String], Head1, Trie, [], Filter);
+        1 ->
+            filter(String, Head ++ [Char], Trie, [], Filter);
+        2 ->
+            filter(String, Head ++ [Char], Trie, Head, Filter)
+    end;
+filter([Char | String], Head, Trie, Success, Filter) ->
+    case status(Head, Trie) of
+        0 ->
+            filter(String, [Char], Trie, [], [Success | Filter]);
+        1 ->
+            filter(String, Head ++ [Char], Trie, Success, Filter);
+        2 ->
+            filter(String, Head ++ [Char], Trie, Head, Filter)
+    end.
+
+replace([], _, _, _, Replaced) ->
+    lists:reverse(Replaced);
+replace([Char | String], Head, Trie, [], Replaced) ->
+    case status(Head, Trie) of
+        0 ->
+            Head1 = get_fail(Head),
+            {_, Replaced1} = lists:foldl(
+                fun(H, {S, Acc}) ->
+                    case S of
+                        0 -> {S, Acc};
+                        _ -> {S - 1, [H | Acc]}
+                    end
+                end,
+                {length(Head) - length(Head1), Replaced},
+                Head
+            ),
+            replace([Char | String], Head1, Trie, [], Replaced1);
+        1 ->
+            replace(String, Head ++ [Char], Trie, [], Replaced);
+        2 ->
+            replace(String, Head ++ [Char], Trie, Head, Replaced)
+    end;
+replace([Char | String], Head, Trie, Success, Replaced) ->
+    case status(Head, Trie) of
+        0 ->
+            {_, Replaced1} = lists:foldl(
+                fun(H, {S, Acc}) ->
+                    case S of
+                        [] -> {S, [H | Acc]};
+                        [_ | S1] -> {S1, [42 | Acc]}
+                    end
+                end,
+                {Success, Replaced},
+                Head
+            ),
+            replace(String, [Char], Trie, [], Replaced1);
+        1 ->
+            replace(String, Head ++ [Char], Trie, Success, Replaced);
+        2 ->
+            replace(String, Head ++ [Char], Trie, Head, Replaced)
+    end.
+
+check([], _, _, _) ->
+    true;
+check([Char | String], Head, Trie, []) ->
+    case status(Head, Trie) of
+        0 ->
+            Head1 = get_fail(Head),
+            check([Char | String], Head1, Trie, []);
+        1 ->
+            check(String, Head ++ [Char], Trie, []);
+        2 ->
+            check(String, Head ++ [Char], Trie, Head)
+    end;
+check([Char | String], Head, Trie, Success) ->
+    case status(Head, Trie) of
+        0 ->
+            false;
+        1 ->
+            check(String, Head ++ [Char], Trie, Success);
+        2 ->
+            check(String, Head ++ [Char], Trie, Head)
+    end.
+
+insert([], Trie) ->
+    Trie;
+insert([Char], Childs) ->
+    CharChilds = maps:get(Char, Childs, #{}),
+    Childs#{Char => CharChilds#{-1 => ok}};
+insert([Char | RChar], Childs) ->
+    CharChilds = maps:get(Char, Childs, #{}),
+    Childs#{Char => insert(RChar, CharChilds)}.
+
+get_childs([], Childs) ->
+    {ok, maps:keys(Childs)};
+get_childs([Char | RChar], Childs) ->
+    case maps:get(Char, Childs, undefined) of
+        undefined -> false;
+        CharChilds -> get_childs(RChar, CharChilds)
+    end.
+
+get_fail(Key) ->
+    case get({fail, Key}) of
+        undefined -> [];
+        FailKey -> FailKey
+    end.
+
+status(Key, Trie) ->
+    case get_childs(Key, Trie) of
+        {ok, Childs} ->
+            case lists:member(-1, Childs) of
+                true ->
+                    2;
+                false ->
+                    1
+            end;
+        false ->
+            0
+    end.
